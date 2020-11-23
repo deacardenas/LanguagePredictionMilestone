@@ -1,0 +1,304 @@
+---
+title: "Natural Language Processing Milestone Report"
+author: "Andrea Cárdenas"
+date: "22/11/2020"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+    number_sections: true
+---
+
+```{r setup, include=FALSE, cache=TRUE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# Introduction
+
+This report includes the progress made for the Data Science Specialization Capstone Project. The goal of this project is to build a predictive text model by using texts from blogs, news sites, and twitter. This report describes and presents the results from loading, cleaning, tokenizing, and exploring the datasets.
+
+# Loading the Datasets
+
+The data used to train the model is from a corpus called HC Corpora. The data may be downloaded [here](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip). The data includes texts in four languages (english, german, finnish, and russian) from three sources (twitter, blogs, and news). For this project, we will only use the data in english.
+
+The following code downloads the datasets and loads them into R:
+
+```{r, cache=TRUE, warning=FALSE}
+# Download Data
+dataurl <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+filename <- "Coursera-SwiftKey.zip"
+if(!file.exists(filename)){
+    download.file(dataurl, filename)
+}
+# Unzip file
+if(!dir.exists("./final")){
+    unzip(filename)
+}
+# Load data
+blogs <- readLines("./final/en_US/en_US.blogs.txt")
+news <- readLines("./final/en_US/en_US.news.txt")
+twitter <- readLines("./final/en_US/en_US.twitter.txt")
+# Number of lines
+length(twitter); length(news); length(blogs)
+# See samples of data
+twitter[1]; news[1]; blogs[1]
+```
+
+There are three datasets, one from each source. The twitter dataset has over 2 million samples, which is fairly large. The code also prints a sample from each dataset to see what the data looks like.
+
+# Building the Training Datasets
+
+## Sampling Datasets
+
+The first step is to sample the dataset. We will explore some tendencies in the dataset, which will work fine in a randomly selected sample. Another reason for this is to make the processing faster, since we are working with fairly large datasets. The following code will randomly sample 10% of each of the three datasets:
+
+```{r, cache=TRUE}
+# Get a Sample from datasets
+blogs <- blogs[sample(length(blogs), length(blogs)*.1, replace = FALSE)]
+news <- news[sample(length(news), length(news)*.1, replace = FALSE)]
+twitter <- twitter[sample(length(twitter), length(twitter)*.1, replace = FALSE)]
+```
+
+## Splitting Sentences
+
+Since we will be removing punctuation from the data, we need to split the datasets into sentences. The following function will split the sampled datasets into sentences:
+
+```{r, cache=TRUE}
+splitSentences <- function(strData){
+    result <- vector(mode="character")
+    for (numline in 1:length(strData)){
+        line <- strData[numline]
+        if (grepl("[.,:;?!]", line)){
+            lines <- strsplit(line, "[.,:;?!]{1,}")
+            lines <- lines[[1]]
+            lines <- lines[nchar(lines)>1]
+        }
+        else {
+            lines <- line
+        }
+        if (length(lines)>0){
+            result[(length(result)+1):(length(result)+length(lines))] <- lines
+        }
+    }
+    result
+}
+```
+
+Now, we will split the sampled datasets into sentences and save the newly created dataframes into csv files to then be loaded into a Corpus object:
+
+```{r, cache=TRUE}
+blogs <- splitSentences(blogs)
+news <- splitSentences(news)
+twitter <- splitSentences(twitter)
+write.csv(blogs, file = "./samples/blogSample.csv", row.names = FALSE); rm(blogs)
+write.csv(news, file = "./samples/newsSample.csv", row.names = FALSE); rm(news)
+write.csv(twitter, file = "./samples/twitterSample.csv", row.names = FALSE); rm(twitter)
+```
+
+## Creating Corpus Object
+
+To clean the data, we will be using the `tm` package, which provides a text mining infrastructure in R. The first step is to load the sampled datasets into a Corpus object:
+
+```{r, cache=TRUE, warning=FALSE}
+library(tm)
+ovid <- VCorpus(DirSource("./samples", encoding = "UTF-8"), readerControl = list(language = "en"))
+summary(ovid)
+```
+
+# Cleaning the Data
+
+## Removing Characters
+
+For the purposes of building the predictive text model, we can remove numbers and punctuation from the texts. We will also convert all text to lowercase since this will be necessary when we explore the data to find the most-used terms.
+
+```{r, cache=TRUE, warning=FALSE}
+ovid <- tm_map(ovid, removeNumbers)
+ovid <- tm_map(ovid, removePunctuation)
+ovid <- tm_map(ovid, stripWhitespace)
+ovid <- tm_map(ovid, content_transformer(tolower))
+```
+
+## Removing Foul Words
+
+Since we don't want to train a model that will suggest swear words, we will remove them from the dataset. The list of blacklisted words was taken from Luis Von Ahn's website in [this](https://www.cs.cmu.edu/~biglou/resources/bad-words.txt) link.
+
+```{r, cache=TRUE, warning=FALSE}
+profane_words <- read.table("./swear_words.txt")
+ovid <- tm_map(ovid, removeWords, as.character(profane_words))
+```
+
+# Exploratory Data Analysis
+
+Now, we will start to explore the datasets that we will be using to build the model. This step is very important since it will help get a better idea of how the predictive model can be built.
+
+## Term Document Matrix
+
+The Term Document Matrix is an object loaded by the `tm` package, which calculates and stores the frequencies of distinct terms for all documents in the Corpus.
+
+```{r, cache=TRUE, warning=FALSE}
+tdm <- TermDocumentMatrix(ovid)
+```
+
+## Single Term Frequency
+
+Let's inspect the term-document matrix for the complete Corpus:
+ 
+```{r, cache=TRUE, warning=FALSE}
+inspect(tdm)
+```
+The most repeated terms in the data are stopwords like "the", "and", "for", and "that". We will first see some analysis of the whole Corpus and then inspect how it changes when we remove stopwords. There are also a lot of sparse terms, so we could look into making the model faster by removing sparse terms.
+
+### Complete Dataset
+
+These are the 15 most frequent terms in all 3 datasets, which are all stopwords:
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+freqTerms <- as.data.frame(findMostFreqTerms(tdm, n = 15))
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+freqTerms %>% 
+  tibble::rownames_to_column("Term") %>% 
+  melt(id.vars = 1, value.name="Frequency", variable.name="Dataset") %>% 
+  arrange(Frequency) %>%
+  mutate(Term=factor(Term, levels=unique(Term))) %>%
+  ggplot(aes(x = Term, y = Frequency, fill = Dataset)) + geom_col() + coord_flip()
+```
+
+Another (prettier) way to visualize this data is with a word cloud, using the `wordcloud` package.
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+library(wordcloud)
+m <- as.matrix(tdm)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+wordcloud(words = d$word, freq = d$freq, min.freq = 1,
+          max.words=200, random.order=FALSE, rot.per=0.35, random.color = TRUE,           colors=brewer.pal(9, "Set1"), use.r.layout = TRUE)
+```
+
+### Removing Stopwords and Stemming
+
+Now, we can take a look at which non-stopword terms have the most instances in our data. We will also stem our terms (e.g. "loving", "lovely", and "loved" all being considered the same word).
+
+```{r, cache=TRUE, warning=FALSE}
+tdmStem <- TermDocumentMatrix(ovid, control = list(stopwords = TRUE, stemming = TRUE))
+inspect(tdmStem)
+```
+
+Now, the most frequent terms are "one", "will", and "like". What is also interesting is that when stopwords are removed, we can notice that the frequency distribution of terms across the 3 datasets are more varied.
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+freqTermsStem <- as.data.frame(findMostFreqTerms(tdmStem, n = 15))
+freqTermsStem %>% 
+  tibble::rownames_to_column("Term") %>% 
+  melt(id.vars = 1, value.name="Frequency", variable.name="Dataset") %>% 
+  arrange(Frequency) %>%
+  mutate(Term=factor(Term, levels=unique(Term))) %>%
+  ggplot(aes(x = Term, y = Frequency, fill = Dataset)) + geom_col() + coord_flip()
+```
+
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+library(wordcloud)
+m <- as.matrix(tdmStem)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+wordcloud(words = d$word, freq = d$freq, min.freq = 1,
+          max.words=200, random.order=FALSE, rot.per=0.35, random.color = TRUE,           colors=brewer.pal(9, "Set1"), use.r.layout = TRUE)
+```
+
+## 2-Gram and 3-Gram Frequency
+
+Now, we will analyze the term frequency for 2-word and 3-word sets. This information will be very important in building the text prediction model.
+
+First, we will use the `RWeka` package to create tokenizer functions that finds bigrams that appear in the corpus to use as terms in the term-document matrix.
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+library(RWeka)
+bigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+trigramTokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+```
+
+Now let's look at the most repeated word pairs:
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+tdm2gram <- TermDocumentMatrix(ovid, control = list(tokenize = bigramTokenizer))
+inspect(tdm2gram)
+```
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+freqTermsBigram <- as.data.frame(findMostFreqTerms(tdm2gram, n = 15))
+freqTermsBigram %>% 
+  tibble::rownames_to_column("Term") %>% 
+  melt(id.vars = 1, value.name="Frequency", variable.name="Dataset") %>% 
+  arrange(Frequency) %>%
+  mutate(Term=factor(Term, levels=unique(Term))) %>%
+  ggplot(aes(x = Term, y = Frequency, fill = Dataset)) + geom_col() + coord_flip()
+```
+
+And the most repeated sets of 3 words:
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+tdm3gram <- TermDocumentMatrix(ovid, control = list(tokenize = trigramTokenizer))
+inspect(tdm3gram)
+```
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+freqTermsTrigram <- as.data.frame(findMostFreqTerms(tdm3gram, n = 15))
+freqTermsTrigram %>% 
+  tibble::rownames_to_column("Term") %>% 
+  melt(id.vars = 1, value.name="Frequency", variable.name="Dataset") %>% 
+  arrange(Frequency) %>%
+  mutate(Term=factor(Term, levels=unique(Term))) %>%
+  ggplot(aes(x = Term, y = Frequency, fill = Dataset)) + geom_col() + coord_flip()
+```
+
+## Word Instance Coverage
+
+Now, let's take a look at how many unique words we need in a frequency sorted dictionary to cover 50% and 90% of all word instances. The following plot shows the number of words (sorted by most frequent) and the total percentage of all word instances that they cover:
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+numWords <- seq(1, 12000, 10)
+percAllWords <- sapply(numWords, function(x) colSums(as.data.frame(findMostFreqTerms(tdm, n = x)))/colSums(as.matrix(tdm)))
+y <- as.data.frame(t(percAllWords))
+y$numWords <- numWords
+y <- melt(y, id.vars="numWords")
+ggplot(y, aes(numWords,value, col=variable)) + geom_point() + labs(x = "Number of Words", y = "Percent of Total Word Instances") + geom_hline(yintercept=0.5, linetype="dashed", color = "red", size=2) + geom_hline(yintercept=0.9, linetype="dashed", color = "red", size=2)
+```
+
+According to the calculated data, we need between 220 and 420 words to cover 50% of all instances (depending if the data is from twitter, news, or blogs) and between 7370 and 9090 to cover 90%. This is a small amount, since there are over 170,000 words.
+
+## Foreign Language Instances
+
+Thus far, we have assumed that all sentences in the datasets are in english. We will use the Google's Compact Language Detector package to see how much of the data is not in english.
+
+```{r, cache=TRUE, warning=FALSE, message=FALSE}
+library(cld2)
+blogs <- readLines("./final/en_US/en_US.blogs.txt")
+languages <- detect_language(blogs)
+languages <- languages[!is.na(languages)]
+sum(languages=="en")/length(languages)
+news <- readLines("./final/en_US/en_US.news.txt")
+languages <- detect_language(news)
+languages <- languages[!is.na(languages)]
+sum(languages=="en")/length(languages)
+twitter <- readLines("./final/en_US/en_US.twitter.txt")
+languages <- detect_language(twitter)
+languages <- languages[!is.na(languages)]
+sum(languages=="en")/length(languages)
+```
+All three datasets are around 99.5% - 99.9% in english, so there is no major problem with foreign languages skewing the model.
+
+# Next Steps: Model Building
+
+Now that the first steps are completed, the next step is to build a model that will predict the next word given a word or sentence. The algorithm that will be used for this model will be as follows:
+
+1. Clean up the input data.
+1. (if input is two words or more) Search the 3-gram term matrix to see most frequent third words given the last two words of the input. Then predict next word using the last word of the input and the predicted answer.
+1. (if input is one word) Search the 2-gram term matrix to see most frequent second words given the input. Then predict next word using the predicted answer.
+3. If there are no matches in the 3-gram and 2-gram term matrices, search correlated words in the one-term matrix.
+4. If no prediction is made with these steps, suggest an answer from a list of most used words.
+
